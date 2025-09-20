@@ -261,6 +261,21 @@ $conn->close();
         </form>
     </div>
 
+
+    <div class="container">
+        <h1>Gestion des serpents</h1>
+
+        <div class="navigation">
+            <a href="finances.php" class="cta-button">Voir les finances</a>
+        </div>
+
+        <hr>
+
+        <div class="section total-section">
+            <h2>Serpents disponibles à la vente : <span class="highlight"><?php echo $total_disponible; ?></span></h2>
+        </div>
+
+
     <div class="data-section">
         <h2>Récapitulatif des naissances</h2>
         <?php if ($result_naissances->num_rows > 0) : ?>
