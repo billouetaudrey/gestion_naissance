@@ -37,27 +37,45 @@ if (isset($_POST['action']) && $_POST['action'] == 'add_vente') {
     $prix_total = $total_vendus * $prix_unitaire;
 
     $conn = new mysqli($servername, $username, $password, $dbname);
+    
+    // --- NOUVEAU : VERIFICATION DES STOCKS DISPONIBLES PAR SEXE ---
+    $stock_stmt = $conn->prepare("SELECT nombre_males, nombre_femelles, sexe_indetermine FROM naissances WHERE id = ?");
+    $stock_stmt->bind_param("i", $naissance_id);
+    $stock_stmt->execute();
+    $result_stock = $stock_stmt->get_result();
+    $stock = $result_stock->fetch_assoc();
+    $stock_stmt->close();
 
-    $stmt = $conn->prepare("INSERT INTO ventes (naissance_id, nombre_serpents, prix_unitaire, prix_total, date_vente, nombre_males, nombre_femelles, nombre_indet) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    $stmt->bind_param("iiddsiii", $naissance_id, $total_vendus, $prix_unitaire, $prix_total, $date_vente, $males, $femelles, $indet);
-
-    if ($stmt->execute()) {
-        $update_stmt = $conn->prepare("UPDATE naissances 
-            SET nombre_vendus = nombre_vendus + ?,
-                nombre_males = nombre_males - ?,
-                nombre_femelles = nombre_femelles - ?,
-                sexe_indetermine = sexe_indetermine - ?
-            WHERE id = ?");
-        $update_stmt->bind_param("iiiii", $total_vendus, $males, $femelles, $indet, $naissance_id);
-        $update_stmt->execute();
-        $update_stmt->close();
-        
-        header("Location: " . $_SERVER['PHP_SELF']);
-        exit();
+    $males_dispo = $stock['nombre_males'];
+    $femelles_dispo = $stock['nombre_femelles'];
+    $indet_dispo = $stock['sexe_indetermine'];
+    
+    // Si la quantité à vendre est supérieure à la quantité disponible, on affiche une erreur.
+    if ($males > $males_dispo || $femelles > $femelles_dispo || $indet > $indet_dispo) {
+        echo "<script>alert('Erreur : La quantité de serpents vendus dépasse le nombre disponible par sexe.'); window.location.href='index.php';</script>";
     } else {
-        echo "Error: " . $stmt->error;
+        // L'ancienne logique de vente est déplacée ici.
+        $stmt = $conn->prepare("INSERT INTO ventes (naissance_id, nombre_serpents, prix_unitaire, prix_total, date_vente, nombre_males, nombre_femelles, nombre_indet) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->bind_param("iiddsiii", $naissance_id, $total_vendus, $prix_unitaire, $prix_total, $date_vente, $males, $femelles, $indet);
+
+        if ($stmt->execute()) {
+            $update_stmt = $conn->prepare("UPDATE naissances
+                SET nombre_vendus = nombre_vendus + ?,
+                    nombre_males = nombre_males - ?,
+                    nombre_femelles = nombre_femelles - ?,
+                    sexe_indetermine = sexe_indetermine - ?
+                WHERE id = ?");
+            $update_stmt->bind_param("iiiii", $total_vendus, $males, $femelles, $indet, $naissance_id);
+            $update_stmt->execute();
+            $update_stmt->close();
+            
+            header("Location: " . $_SERVER['PHP_SELF']);
+            exit();
+        } else {
+            echo "Error: " . $stmt->error;
+        }
+        $stmt->close();
     }
-    $stmt->close();
     $conn->close();
 }
 
@@ -100,7 +118,7 @@ if (isset($_POST['action']) && $_POST['action'] == 'delete_vente') {
     $stmt_delete->bind_param("i", $id_to_delete);
 
     if ($stmt_delete->execute()) {
-        $update_stmt = $conn->prepare("UPDATE naissances 
+        $update_stmt = $conn->prepare("UPDATE naissances
             SET nombre_vendus = nombre_vendus - ?,
                 nombre_males = nombre_males + ?,
                 nombre_femelles = nombre_femelles + ?,
@@ -272,7 +290,7 @@ $conn->close();
                             <td><?php echo $row["nombre_vendus"]; ?></td>
                             <td><?php echo $row["nombre_naissances"] - $row["nombre_vendus"]; ?></td>
                             <td>
-                                <button class="sold-btn" onclick="openSoldModal(<?php echo $row['id']; ?>)">Vendu</button>
+                                <button class="sold-btn" onclick="openSoldModal(<?php echo $row['id']; ?>, <?php echo $row['nombre_males']; ?>, <?php echo $row['nombre_femelles']; ?>, <?php echo $row['sexe_indetermine']; ?>)">Vendu</button>
                                 <form action="<?php echo htmlspecialchars($_SERVER["PHP_SELF"]); ?>" method="post" onsubmit="return confirm('Supprimer cette naissance ?');" style="display:inline-block;">
                                     <input type="hidden" name="action" value="delete_naissance">
                                     <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
@@ -333,7 +351,6 @@ $conn->close();
     </div>
 </div>
 
-<!-- Modal Vente -->
 <div id="soldModal" class="modal">
     <div class="modal-content">
         <span class="close" onclick="closeSoldModal()">&times;</span>
@@ -342,13 +359,13 @@ $conn->close();
             <input type="hidden" name="action" value="add_vente">
             <input type="hidden" id="naissance_id_sold" name="naissance_id">
 
-            <label>Mâles vendus :</label>
+            <label>Mâles vendus (<span id="males_stock">0</span>) :</label>
             <input type="number" name="nombre_males_vendus" value="0" min="0">
 
-            <label>Femelles vendues :</label>
+            <label>Femelles vendues (<span id="femelles_stock">0</span>) :</label>
             <input type="number" name="nombre_femelles_vendus" value="0" min="0">
 
-            <label>Indéterminés vendus :</label>
+            <label>Indéterminés vendus (<span id="indet_stock">0</span>) :</label>
             <input type="number" name="nombre_indet_vendus" value="0" min="0">
 
             <label>Prix unitaire (€) :</label>
@@ -363,8 +380,22 @@ $conn->close();
 </div>
 
 <script>
-function openSoldModal(naissanceId) {
+// La fonction `openSoldModal` accepte maintenant des paramètres pour les stocks
+function openSoldModal(naissanceId, malesStock, femellesStock, indetStock) {
+    // Remplissage de l'ID de la naissance
     document.getElementById('naissance_id_sold').value = naissanceId;
+
+    // Affichage des stocks disponibles à côté des libellés
+    document.getElementById('males_stock').textContent = malesStock;
+    document.getElementById('femelles_stock').textContent = femellesStock;
+    document.getElementById('indet_stock').textContent = indetStock;
+
+    // Réinitialisation des champs de saisie à 0
+    document.querySelector('input[name="nombre_males_vendus"]').value = 0;
+    document.querySelector('input[name="nombre_femelles_vendus"]').value = 0;
+    document.querySelector('input[name="nombre_indet_vendus"]').value = 0;
+    
+    // Affichage de la modale
     document.getElementById('soldModal').style.display = "block";
 }
 function closeSoldModal() {
